@@ -1,14 +1,54 @@
+import { useState } from "react"
 import { PoliceHospitalsMap } from "@/components/map/PoliceHospitalsMap"
 import { Card, CardContent } from "@/components/ui/Card"
 import { Users, Shield, Clock, AlertTriangle, RefreshCw } from "lucide-react"
 
 export function Dashboard() {
+    const [filter, setFilter] = useState<'all' | 'police' | 'hospital'>('all')
+
     return (
         <div className="space-y-8 animate-fade-in">
 
             <div className="flex flex-col xl:flex-row gap-8">
                 {/* Left Side: Map and Filters */}
                 <div className="flex-1 space-y-6">
+                    {/* Filter Options */}
+                    <div className="rounded-xl border border-gray-800 bg-dark-card p-6 shadow-sm backdrop-blur-sm">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-semibold text-lg text-white">Emergency Services Filter</h3>
+                            <div className="flex items-center gap-2">
+                                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                                <span className="text-green-400 text-xs font-medium">Live Data</span>
+                            </div>
+                        </div>
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-6">
+                            <div className="flex items-center gap-3">
+                                <label className="text-gray-400 text-sm font-medium">Show:</label>
+                                <select
+                                    value={filter}
+                                    onChange={(e) => setFilter(e.target.value as 'all' | 'police' | 'hospital')}
+                                    className="bg-gray-900 border border-gray-700 text-white text-sm rounded-lg focus:ring-red-500 focus:border-red-500 block w-full p-2.5 min-w-[160px]"
+                                >
+                                    <option value="all">🏥 All Services</option>
+                                    <option value="police">🚔 Police Stations</option>
+                                    <option value="hospital">🏥 Hospitals</option>
+                                </select>
+                            </div>
+                            <div className="flex items-center gap-4 text-sm">
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-3 bg-blue-500 rounded"></div>
+                                    <span className="text-blue-400 font-bold">82</span>
+                                    <span className="text-gray-400">Police</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <div className="w-3 h-3 bg-red-500 rounded"></div>
+                                    <span className="text-red-400 font-bold">342</span>
+                                    <span className="text-gray-400">Hospitals</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     {/* Map Header */}
                     <div className="flex items-center justify-between">
                         <div>
@@ -16,17 +56,14 @@ export function Dashboard() {
                             <p className="text-gray-400 text-sm">Real-time emergency services coverage</p>
                         </div>
                         <div className="flex items-center gap-3">
-                            <div className="flex items-center gap-2 px-3 py-1 bg-green-500/10 rounded-full border border-green-500/20">
-                                <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                                <span className="text-xs font-medium text-green-500">Live Data</span>
-                            </div>
-                            <button className="p-2 hover:bg-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors">
-                                <RefreshCw className="w-4 h-4" />
+                            <button className="flex items-center gap-2 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-xs font-medium text-gray-300 transition-colors">
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                Refresh Map
                             </button>
                         </div>
                     </div>
 
-                    <PoliceHospitalsMap />
+                    <PoliceHospitalsMap filter={filter} />
                 </div>
 
                 {/* Right Side: Metrics */}
