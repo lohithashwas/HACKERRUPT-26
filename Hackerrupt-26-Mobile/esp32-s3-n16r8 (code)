@@ -1,0 +1,655 @@
+/* Edge Impulse Arduino examples
+ * Copyright (c) 2022 EdgeImpulse Inc.
+ * Modified for ESP32-S3-N16R8 with I2S Microphone (RIGHT channel), LED Control, and Supabase Integration
+ */
+
+// If your target is limited in memory remove this macro to save 10K RAM
+#define EIDSP_QUANTIZE_FILTERBANK   0
+
+/* Includes ---------------------------------------------------------------- */
+#include <Hackerrupt_26MORNING_inferencing.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/i2s.h"
+
+/* WiFi Credentials -------------------------------------------------------- */
+const char* ssid = "rosh";
+const char* password = "qwertyuiop";
+
+/* Supabase Configuration -------------------------------------------------- */
+const char* supabase_url = "https://uiiaujwakrzgpbkawwjt.supabase.co";
+const char* supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVpaWF1andha3J6Z3Bia2F3d2p0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk4NzU1NzYsImV4cCI6MjA4NTQ1MTU3Nn0.5vR237U1mXgqPnKClfTX47NgjFgR5oxiR6W6ipXMfuQ";
+const char* table_name = "keyword_detections";
+
+/* LED Pin Definitions ----------------------------------------------------- */
+#define LED_KEYWORD         4     // LED1 - Keyword detected (Green)
+#define LED_ABUSIVE         5     // LED2 - Abusive word detected (Red)
+#define LED_NOISE           6     // LED3 - Noise detected (Yellow)
+#define LED_ON_DURATION     2000  // LED stays on for 2 seconds when detected
+
+/* I2S Pin Definitions (for ESP32-S3) -------------------------------------- */
+#define I2S_WS              42    // Word Select (LRCLK)
+#define I2S_SD              2     // Serial Data (DOUT)
+#define I2S_SCK             41    // Serial Clock (BCLK)
+#define I2S_PORT            I2S_NUM_0
+
+/* Detection Settings ------------------------------------------------------ */
+#define DETECTION_THRESHOLD 0.50  // Confidence threshold (50%)
+
+/** Audio buffers, pointers and selectors */
+typedef struct {
+    signed short *buffers[2];
+    unsigned char buf_select;
+    unsigned char buf_ready;
+    unsigned int buf_count;
+    unsigned int n_samples;
+} inference_t;
+
+static inference_t inference;
+static const uint32_t sample_buffer_size = 2048;
+static signed short sampleBuffer[sample_buffer_size];
+static bool debug_nn = false;
+static int print_results = -(EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW);
+static bool record_status = true;
+
+/* LED Control Variables --------------------------------------------------- */
+unsigned long led1_off_time = 0;
+unsigned long led2_off_time = 0;
+unsigned long led3_off_time = 0;
+
+/* WiFi Status ------------------------------------------------------------- */
+bool wifi_connected = false;
+
+/**
+ * @brief      Connect to WiFi
+ */
+void setup_wifi() {
+    Serial.println("\n========== WiFi Setup ==========");
+    Serial.print("Connecting to WiFi: ");
+    Serial.println(ssid);
+    
+    WiFi.begin(ssid, password);
+    
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+        delay(500);
+        Serial.print(".");
+        attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+        wifi_connected = true;
+        Serial.println("\n✓ WiFi Connected!");
+        Serial.print("IP Address: ");
+        Serial.println(WiFi.localIP());
+        Serial.print("Signal Strength: ");
+        Serial.print(WiFi.RSSI());
+        Serial.println(" dBm");
+    } else {
+        wifi_connected = false;
+        Serial.println("\n✗ WiFi Connection Failed!");
+        Serial.println("System will continue without database logging.");
+    }
+    Serial.println("================================\n");
+}
+
+/**
+ * @brief      Send detection data to Supabase
+ */
+bool send_to_supabase(bool keyword_detected, bool abusive_detected) {
+    if (!wifi_connected) {
+        Serial.println("⚠ WiFi not connected. Skipping database insert.");
+        return false;
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("⚠ WiFi connection lost. Attempting reconnect...");
+        WiFi.disconnect();
+        WiFi.reconnect();
+        delay(2000);
+        
+        if (WiFi.status() != WL_CONNECTED) {
+            wifi_connected = false;
+            return false;
+        }
+        wifi_connected = true;
+    }
+    
+    HTTPClient http;
+    
+    // Construct Supabase REST API URL
+    String url = String(supabase_url) + "/rest/v1/" + String(table_name);
+    
+    Serial.println("\n>>> Sending to Supabase <<<");
+    Serial.print("URL: ");
+    Serial.println(url);
+    
+    // Prepare JSON payload
+    StaticJsonDocument<256> doc;
+    doc["keyword_detected"] = keyword_detected;
+    doc["abusive_detected"] = abusive_detected;
+    // timestamp will be automatically added by database (default: now())
+    
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
+    
+    Serial.print("Payload: ");
+    Serial.println(jsonPayload);
+    
+    // Start HTTP POST request
+    http.begin(url);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("apikey", supabase_key);
+    http.addHeader("Authorization", String("Bearer ") + supabase_key);
+    http.addHeader("Prefer", "return=minimal");
+    
+    // Send the request
+    int httpResponseCode = http.POST(jsonPayload);
+    
+    bool success = false;
+    if (httpResponseCode > 0) {
+        Serial.print("HTTP Response Code: ");
+        Serial.println(httpResponseCode);
+        
+        if (httpResponseCode == 201 || httpResponseCode == 200) {
+            Serial.println("✓ Data sent successfully to Supabase!");
+            success = true;
+        } else {
+            String response = http.getString();
+            Serial.println("✗ Error response from Supabase:");
+            Serial.println(response);
+        }
+    } else {
+        Serial.print("✗ HTTP Error: ");
+        Serial.println(http.errorToString(httpResponseCode).c_str());
+    }
+    
+    http.end();
+    Serial.println(">>> End Supabase Request <<<\n");
+    
+    return success;
+}
+
+/**
+ * @brief      LED Test Sequence - Tests all LEDs on startup
+ */
+void test_leds() {
+    Serial.println("\n========== LED TEST SEQUENCE ==========");
+    
+    // Test LED1 (GPIO 4 - Keyword)
+    Serial.println("Testing LED1 (GPIO 4 - Keyword)");
+    digitalWrite(LED_KEYWORD, HIGH);
+    Serial.println("  -> LED1 ON");
+    delay(1000);
+    digitalWrite(LED_KEYWORD, LOW);
+    Serial.println("  -> LED1 OFF");
+    delay(500);
+    
+    // Test LED2 (GPIO 5 - Abusive)
+    Serial.println("Testing LED2 (GPIO 5 - Abusive)");
+    digitalWrite(LED_ABUSIVE, HIGH);
+    Serial.println("  -> LED2 ON");
+    delay(1000);
+    digitalWrite(LED_ABUSIVE, LOW);
+    Serial.println("  -> LED2 OFF");
+    delay(500);
+    
+    // Test LED3 (GPIO 6 - Noise)
+    Serial.println("Testing LED3 (GPIO 6 - Noise)");
+    digitalWrite(LED_NOISE, HIGH);
+    Serial.println("  -> LED3 ON");
+    delay(1000);
+    digitalWrite(LED_NOISE, LOW);
+    Serial.println("  -> LED3 OFF");
+    delay(500);
+    
+    Serial.println("========== LED TEST COMPLETE ==========\n");
+}
+
+/**
+ * @brief      Turn on LED for specified duration
+ */
+void activate_led(int led_pin, unsigned long *off_time, const char* led_name) {
+    Serial.print(">>> Activating ");
+    Serial.print(led_name);
+    Serial.print(" (GPIO ");
+    Serial.print(led_pin);
+    Serial.println(")");
+    
+    digitalWrite(led_pin, HIGH);
+    *off_time = millis() + LED_ON_DURATION;
+}
+
+/**
+ * @brief      Check and turn off LEDs after duration expires
+ */
+void manage_leds() {
+    unsigned long current_time = millis();
+    
+    if (led1_off_time > 0 && current_time >= led1_off_time) {
+        digitalWrite(LED_KEYWORD, LOW);
+        led1_off_time = 0;
+    }
+    
+    if (led2_off_time > 0 && current_time >= led2_off_time) {
+        digitalWrite(LED_ABUSIVE, LOW);
+        led2_off_time = 0;
+    }
+    
+    if (led3_off_time > 0 && current_time >= led3_off_time) {
+        digitalWrite(LED_NOISE, LOW);
+        led3_off_time = 0;
+    }
+}
+
+/**
+ * @brief      Handle detection and control LEDs based on classification
+ */
+void handle_detection(ei_impulse_result_t result) {
+    // Find the label with highest confidence
+    float max_confidence = 0.0;
+    int max_index = -1;
+    
+    for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+        if (result.classification[ix].value > max_confidence) {
+            max_confidence = result.classification[ix].value;
+            max_index = ix;
+        }
+    }
+    
+    // Check if confidence is above threshold
+    if (max_confidence > DETECTION_THRESHOLD && max_index >= 0) {
+        String detected_label = String(result.classification[max_index].label);
+        detected_label.toLowerCase();
+        
+        Serial.println("\n========================================");
+        Serial.println(">>> DETECTION EVENT <<<");
+        Serial.println("========================================");
+        Serial.print("Label: ");
+        Serial.println(result.classification[max_index].label);
+        Serial.print("Confidence: ");
+        Serial.print(max_confidence * 100, 2);
+        Serial.println("%");
+        
+        // Initialize detection flags
+        bool keyword_detected = false;
+        bool abusive_detected = false;
+        
+        // Turn off all LEDs first
+        digitalWrite(LED_KEYWORD, LOW);
+        digitalWrite(LED_ABUSIVE, LOW);
+        digitalWrite(LED_NOISE, LOW);
+        led1_off_time = 0;
+        led2_off_time = 0;
+        led3_off_time = 0;
+        
+        // Match labels - UPDATE THESE TO MATCH YOUR EDGE IMPULSE MODEL LABELS
+        // Common label formats: "sos", "keyword", "killyou", "abusive", "noise", etc.
+        
+        if (detected_label.indexOf("sos") >= 0 || detected_label.indexOf("keyword") >= 0) {
+            activate_led(LED_KEYWORD, &led1_off_time, "LED1-KEYWORD");
+            keyword_detected = true;
+            Serial.println("🚨 KEYWORD DETECTED: SOS");
+        }
+        else if (detected_label.indexOf("killyou") >= 0 || detected_label.indexOf("abusive") >= 0) {
+            activate_led(LED_ABUSIVE, &led2_off_time, "LED2-ABUSIVE");
+            abusive_detected = true;
+            Serial.println("⚠ ABUSIVE WORD DETECTED: KILLYOU");
+        }
+        else if (detected_label.indexOf("noise") >= 0) {
+            activate_led(LED_NOISE, &led3_off_time, "LED3-NOISE");
+            Serial.println("🔊 NOISE DETECTED");
+        }
+        else {
+            Serial.println("⚠ Label detected but no LED mapping found!");
+            Serial.print("Update handle_detection() with your label: ");
+            Serial.println(result.classification[max_index].label);
+        }
+        
+        // Send to Supabase if keyword or abusive word detected
+        if (keyword_detected || abusive_detected) {
+            Serial.println("\n--- Database Logging ---");
+            bool db_success = send_to_supabase(keyword_detected, abusive_detected);
+            if (db_success) {
+                Serial.println("✓ Detection logged to database");
+            } else {
+                Serial.println("✗ Failed to log to database");
+            }
+            Serial.println("------------------------");
+        }
+        
+        Serial.println("========================================");
+        Serial.println(">>> END DETECTION EVENT <<<");
+        Serial.println("========================================\n");
+    }
+}
+
+/**
+ * @brief      Arduino setup function
+ */
+void setup()
+{
+    // Initialize Serial
+    Serial.begin(115200);
+    while (!Serial);
+    
+    Serial.println("\n\n========================================");
+    Serial.println("ESP32-S3 Keyword Detection System");
+    Serial.println("Edge Impulse + I2S Mic + Supabase");
+    Serial.println("========================================\n");
+
+    // Initialize LED pins
+    pinMode(LED_KEYWORD, OUTPUT);
+    pinMode(LED_ABUSIVE, OUTPUT);
+    pinMode(LED_NOISE, OUTPUT);
+    
+    // Turn off all LEDs initially
+    digitalWrite(LED_KEYWORD, LOW);
+    digitalWrite(LED_ABUSIVE, LOW);
+    digitalWrite(LED_NOISE, LOW);
+    
+    // Run LED test sequence
+    test_leds();
+    
+    // Setup WiFi connection
+    setup_wifi();
+    
+    // Display inferencing settings
+    ei_printf("Inferencing settings:\n");
+    ei_printf("\tInterval: ");
+    ei_printf_float((float)EI_CLASSIFIER_INTERVAL_MS);
+    ei_printf(" ms.\n");
+    ei_printf("\tFrame size: %d\n", EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE);
+    ei_printf("\tSample length: %d ms.\n", EI_CLASSIFIER_RAW_SAMPLE_COUNT / 16);
+    ei_printf("\tNo. of classes: %d\n", sizeof(ei_classifier_inferencing_categories) / sizeof(ei_classifier_inferencing_categories[0]));
+    
+    Serial.println("\nYour Model Labels:");
+    for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+        Serial.print("  [");
+        Serial.print(ix);
+        Serial.print("] ");
+        Serial.println(ei_classifier_inferencing_categories[ix]);
+    }
+    
+    Serial.print("\nDetection threshold: ");
+    Serial.print(DETECTION_THRESHOLD * 100);
+    Serial.println("%");
+    Serial.print("LED ON duration: ");
+    Serial.print(LED_ON_DURATION / 1000);
+    Serial.println(" seconds\n");
+
+    // Initialize classifier
+    run_classifier_init();
+    
+    Serial.println("Starting continuous inference in 2 seconds...");
+    ei_sleep(2000);
+
+    // Start microphone
+    if (microphone_inference_start(EI_CLASSIFIER_SLICE_SIZE) == false) {
+        ei_printf("ERR: Could not allocate audio buffer (size %d)\r\n", EI_CLASSIFIER_RAW_SAMPLE_COUNT);
+        // Blink all LEDs to indicate error
+        while(1) {
+            digitalWrite(LED_KEYWORD, HIGH);
+            digitalWrite(LED_ABUSIVE, HIGH);
+            digitalWrite(LED_NOISE, HIGH);
+            delay(200);
+            digitalWrite(LED_KEYWORD, LOW);
+            digitalWrite(LED_ABUSIVE, LOW);
+            digitalWrite(LED_NOISE, LOW);
+            delay(200);
+        }
+    }
+
+    Serial.println("========================================");
+    Serial.println("System Ready - Listening...");
+    Serial.println("========================================\n");
+}
+
+/**
+ * @brief      Arduino main function. Runs the inferencing loop.
+ */
+void loop()
+{
+    // Manage LED timers
+    manage_leds();
+    
+    bool m = microphone_inference_record();
+    if (!m) {
+        ei_printf("ERR: Failed to record audio...\n");
+        return;
+    }
+
+    signal_t signal;
+    signal.total_length = EI_CLASSIFIER_SLICE_SIZE;
+    signal.get_data = &microphone_audio_signal_get_data;
+    ei_impulse_result_t result = {0};
+
+    EI_IMPULSE_ERROR r = run_classifier_continuous(&signal, &result, debug_nn);
+    if (r != EI_IMPULSE_OK) {
+        ei_printf("ERR: Failed to run classifier (%d)\n", r);
+        return;
+    }
+
+    if (++print_results >= (EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW)) {
+        // print the predictions
+        ei_printf("Predictions ");
+        ei_printf("(DSP: %d ms., Classification: %d ms., Anomaly: %d ms.)",
+            result.timing.dsp, result.timing.classification, result.timing.anomaly);
+        ei_printf(": \n");
+        for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+            ei_printf("    %s: ", result.classification[ix].label);
+            ei_printf_float(result.classification[ix].value);
+            ei_printf("\n");
+        }
+#if EI_CLASSIFIER_HAS_ANOMALY == 1
+        ei_printf("    anomaly score: ");
+        ei_printf_float(result.anomaly);
+        ei_printf("\n");
+#endif
+
+        // Handle detection and control LEDs
+        handle_detection(result);
+        
+        print_results = 0;
+    }
+}
+
+static void audio_inference_callback(uint32_t n_bytes)
+{
+    for(int i = 0; i < n_bytes>>1; i++) {
+        inference.buffers[inference.buf_select][inference.buf_count++] = sampleBuffer[i];
+
+        if(inference.buf_count >= inference.n_samples) {
+            inference.buf_select ^= 1;
+            inference.buf_count = 0;
+            inference.buf_ready = 1;
+        }
+    }
+}
+
+static void capture_samples(void* arg) {
+    const int32_t i2s_bytes_to_read = (uint32_t)arg;
+    size_t bytes_read = i2s_bytes_to_read;
+
+    while (record_status) {
+        /* read data at once from i2s */
+        i2s_read(I2S_PORT, (void*)sampleBuffer, i2s_bytes_to_read, &bytes_read, 100);
+
+        if (bytes_read <= 0) {
+            ei_printf("Error in I2S read : %d", bytes_read);
+        }
+        else {
+            if (bytes_read < i2s_bytes_to_read) {
+                ei_printf("Partial I2S read");
+            }
+
+            // scale the data (otherwise the sound is too quiet)
+            for (int x = 0; x < i2s_bytes_to_read/2; x++) {
+                sampleBuffer[x] = (int16_t)(sampleBuffer[x]) * 8;
+            }
+
+            if (record_status) {
+                audio_inference_callback(i2s_bytes_to_read);
+            }
+            else {
+                break;
+            }
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+/**
+ * @brief      Init inferencing struct and setup/start I2S
+ *
+ * @param[in]  n_samples  The n samples
+ *
+ * @return     { description_of_the_return_value }
+ */
+static bool microphone_inference_start(uint32_t n_samples)
+{
+    inference.buffers[0] = (signed short *)malloc(n_samples * sizeof(signed short));
+
+    if (inference.buffers[0] == NULL) {
+        return false;
+    }
+
+    inference.buffers[1] = (signed short *)malloc(n_samples * sizeof(signed short));
+
+    if (inference.buffers[1] == NULL) {
+        ei_free(inference.buffers[0]);
+        return false;
+    }
+
+    inference.buf_select = 0;
+    inference.buf_count = 0;
+    inference.n_samples = n_samples;
+    inference.buf_ready = 0;
+
+    if (i2s_init(EI_CLASSIFIER_FREQUENCY)) {
+        ei_printf("Failed to start I2S!");
+        return false;
+    }
+
+    ei_sleep(100);
+
+    record_status = true;
+
+    xTaskCreate(capture_samples, "CaptureSamples", 1024 * 32, (void*)sample_buffer_size, 10, NULL);
+
+    return true;
+}
+
+/**
+ * @brief      Wait on new data
+ *
+ * @return     True when finished
+ */
+static bool microphone_inference_record(void)
+{
+    bool ret = true;
+
+    if (inference.buf_ready == 1) {
+        ei_printf(
+            "Error sample buffer overrun. Decrease the number of slices per model window "
+            "(EI_CLASSIFIER_SLICES_PER_MODEL_WINDOW)\n");
+        ret = false;
+    }
+
+    while (inference.buf_ready == 0) {
+        delay(1);
+    }
+
+    inference.buf_ready = 0;
+    return ret;
+}
+
+/**
+ * Get raw audio signal data
+ */
+static int microphone_audio_signal_get_data(size_t offset, size_t length, float *out_ptr)
+{
+    numpy::int16_to_float(&inference.buffers[inference.buf_select ^ 1][offset], out_ptr, length);
+
+    return 0;
+}
+
+/**
+ * @brief      Stop I2S and release buffers
+ */
+static void microphone_inference_end(void)
+{
+    i2s_deinit();
+    ei_free(inference.buffers[0]);
+    ei_free(inference.buffers[1]);
+}
+
+/**
+ * @brief      Initialize I2S with correct pins for ESP32-S3
+ */
+static int i2s_init(uint32_t sampling_rate) {
+    // I2S configuration for ESP32-S3 with RIGHT channel microphone
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = sampling_rate,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_RIGHT,  // RIGHT CHANNEL
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 8,
+        .dma_buf_len = 512,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0
+    };
+    
+    // Pin configuration for ESP32-S3-N16R8
+    i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_SCK,           // GPIO 41
+        .ws_io_num = I2S_WS,             // GPIO 42
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = I2S_SD            // GPIO 2
+    };
+    
+    esp_err_t ret = 0;
+
+    ret = i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL);
+    if (ret != ESP_OK) {
+        ei_printf("Error in i2s_driver_install: %d\n", ret);
+        return int(ret);
+    }
+
+    ret = i2s_set_pin(I2S_PORT, &pin_config);
+    if (ret != ESP_OK) {
+        ei_printf("Error in i2s_set_pin: %d\n", ret);
+        return int(ret);
+    }
+
+    ret = i2s_zero_dma_buffer(I2S_PORT);
+    if (ret != ESP_OK) {
+        ei_printf("Error in initializing dma buffer with 0: %d\n", ret);
+        return int(ret);
+    }
+
+    ei_printf("I2S initialized successfully\n");
+    ei_printf("  Sample rate: %d Hz\n", sampling_rate);
+    ei_printf("  Channel: RIGHT\n");
+    ei_printf("  SCK (BCLK): GPIO %d\n", I2S_SCK);
+    ei_printf("  WS (LRCLK): GPIO %d\n", I2S_WS);
+    ei_printf("  SD (DOUT): GPIO %d\n", I2S_SD);
+
+    return int(ret);
+}
+
+static int i2s_deinit(void) {
+    i2s_driver_uninstall(I2S_PORT);
+    return 0;
+}
+
+#if !defined(EI_CLASSIFIER_SENSOR) || EI_CLASSIFIER_SENSOR != EI_CLASSIFIER_SENSOR_MICROPHONE
+#error "Invalid model for current sensor."
+#endif
