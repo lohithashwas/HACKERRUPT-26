@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Twilio Communication Hub</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: linear-gradient(135deg, #1e052c 0%, #3f0d4b 100%);
+            color: white;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2rem;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+        h1 {
+            margin-bottom: 2rem;
+            font-size: 2rem;
+        }
+        p.target {
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+            color: #ddd;
+        }
+        button {
+            width: 100%;
+            padding: 15px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        .btn-call {
+            background-color: #F22F46;
+            color: white;
+        }
+        .btn-call:hover {
+            background-color: #d11a2f;
+            transform: translateY(-2px);
+        }
+        .btn-sms {
+            background-color: #001489;
+            color: white;
+        }
+        .btn-sms:hover {
+            background-color: #000d5e;
+            transform: translateY(-2px);
+        }
+        #status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+        }
+        .success {
+            background-color: rgba(46, 204, 113, 0.2);
+            color: #2ecc71;
+            border: 1px solid #2ecc71;
+        }
+        .error {
+            background-color: rgba(231, 76, 60, 0.2);
+            color: #e74c3c;
+            border: 1px solid #e74c3c;
+        }
+        .loading {
+             color: #ccc;
+             font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Connect Now</h1>
+        <p class="target">Target: <span id="target-number">{{ target_number }}</span></p>
+        
+        <button onclick="initiateCall()" class="btn-call">
+            📞 Initiate Call
+        </button>
+        
+        <button onclick="sendSMS()" class="btn-sms">
+            💬 Send SMS
+        </button>
+
+        <div id="status"></div>
+    </div>
+
+    <script>
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.style.display = 'block';
+            statusDiv.textContent = message;
+            statusDiv.className = type;
+            
+            // Auto hide after 5 seconds
+            setTimeout(() => {
+                statusDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        async function initiateCall() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.style.display = 'block';
+            statusDiv.textContent = 'Initiating call...';
+            statusDiv.className = 'loading';
+
+            try {
+                const response = await fetch('/initiate-call', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showStatus(data.message, 'success');
+                } else {
+                    showStatus(data.message, 'error');
+                }
+            } catch (error) {
+                showStatus('Network error occurred', 'error');
+            }
+        }
+
+        async function sendSMS() {
+            const statusDiv = document.getElementById('status');
+            statusDiv.style.display = 'block';
+            statusDiv.textContent = 'Sending SMS...';
+            statusDiv.className = 'loading';
+
+            try {
+                const response = await fetch('/send-sms', { method: 'POST' });
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    showStatus(data.message, 'success');
+                } else {
+                    showStatus(data.message, 'error');
+                }
+            } catch (error) {
+                showStatus('Network error occurred', 'error');
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+    "name": "efir-backend-server",
+    "version": "1.0.0",
+    "main": "index.js",
+    "type": "module",
+    "dependencies": {
+        "axios": "^1.13.4",
+        "body-parser": "^1.20.2",
+        "cors": "^2.8.5",
+        "express": "^4.18.2",
+        "nodemailer": "^7.0.13",
+        "web3": "^4.1.1"
+    }
+}
