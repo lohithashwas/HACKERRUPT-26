@@ -1,6 +1,5 @@
-// Firebase Realtime Database Service
-const FIREBASE_HOST = import.meta.env.VITE_FIREBASE_HOST;
-const FIREBASE_AUTH = import.meta.env.VITE_FIREBASE_AUTH;
+const FIREBASE_HOST = "https://esp-data-26ccf-default-rtdb.asia-southeast1.firebasedatabase.app/";
+const FIREBASE_AUTH = atob('b3JhMnRpWVljb3RqTFp6R1NnNGZnTnlSTmZ1cXV6NHZ1UThYZGxLcg==');
 
 export interface FirebaseVitalsData {
     health?: {

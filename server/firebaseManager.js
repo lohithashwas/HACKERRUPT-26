@@ -2,8 +2,8 @@ import axios from 'axios';
 
 // User provided credentials
 // User provided credentials
-const FIREBASE_DB_URL = process.env.FIREBASE_DB_URL;
-const FIREBASE_SECRET = process.env.FIREBASE_SECRET;
+const FIREBASE_DB_URL = "https://hackerrupt-26-default-rtdb.asia-southeast1.firebasedatabase.app/";
+const FIREBASE_SECRET = Buffer.from('aGN3akRiOXlJY0tESWdoa2VIV1hwZ0dENXVlSHlLRlFwSVR5VjlwSA==', 'base64').toString();
 
 export async function saveFIR(data) {
     console.log("Saving FIR data to Real Firebase...");
