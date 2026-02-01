@@ -186,6 +186,12 @@ app.post('/api/emergency-alert', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`E-FIR Server running on http://localhost:${PORT}`);
-});
+// Export the Express app for Vercel
+export default app;
+
+// Only listen on port if running directly (locally)
+if (process.env.NODE_ENV !== 'production' || process.env.VERCEL_ENV !== 'production') {
+    app.listen(PORT, () => {
+        console.log(`E-FIR Server running on http://localhost:${PORT}`);
+    });
+}
